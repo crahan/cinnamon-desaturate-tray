@@ -1,0 +1,50 @@
+{
+    "head": {
+        "type": "header",
+        "description": "Effects for all system tray icons (xapp-status and legacy systray)"
+    },
+    "desaturation": {
+        "type": "scale",
+        "default": 100,
+        "min": 0,
+        "max": 100,
+        "step": 5,
+        "digits": 0,
+        "units": "%",
+        "description": "Desaturation",
+        "tooltip": "0% keeps the original colors, 100% makes the icons fully grey"
+    },
+    "brightness": {
+        "type": "scale",
+        "default": 0,
+        "min": -100,
+        "max": 100,
+        "step": 5,
+        "digits": 0,
+        "units": "%",
+        "description": "Brightness",
+        "tooltip": "Negative values make the icons darker, positive values make them lighter"
+    },
+    "contrast": {
+        "type": "scale",
+        "default": 0,
+        "min": -100,
+        "max": 100,
+        "step": 5,
+        "digits": 0,
+        "units": "%",
+        "description": "Contrast",
+        "tooltip": "Negative values decrease contrast, positive values increase it"
+    },
+    "color-on-hover": {
+        "type": "switch",
+        "default": false,
+        "description": "Show original colors on hover",
+        "tooltip": "Remove all effects from an icon while the pointer is over it"
+    },
+    "reset": {
+        "type": "button",
+        "description": "Reset to defaults",
+        "callback": "resetDefaults"
+    }
+}
