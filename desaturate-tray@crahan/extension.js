@@ -7,7 +7,6 @@
 // The effects go on each icon actor (not on the containers), so the hover highlight keeps its color.
 
 const Clutter = imports.gi.Clutter;
-const GLib = imports.gi.GLib;
 const Main = imports.ui.main;
 const AppletManager = imports.ui.appletManager;
 const Settings = imports.ui.settings;
@@ -23,7 +22,6 @@ const SETTINGS = {
     "contrast": "contrast",
     "color-on-hover": "colorOnHover",
 };
-const MAX_RETRIES = 30;
 
 let uuid = null;
 let trayEffects = null;
@@ -39,10 +37,11 @@ class TrayEffects {
 
         this._actors = new Map();
         this._patchedApplets = [];
-        this._settingsChangedId = 0;
+        // Panel zone box -> { addedId, destroyId }.
+        this._panelBoxes = new Map();
+        this._panelsEnabledId = 0;
+        this._monitorsChangedId = 0;
         this._iconAddedId = 0;
-        this._rescanSourceId = 0;
-        this._retriesLeft = MAX_RETRIES;
 
         this._settings = new Settings.ExtensionSettings(this, uuid);
         for (let [key, prop] of Object.entries(SETTINGS)) {
@@ -51,26 +50,36 @@ class TrayEffects {
     }
 
     enable() {
+        // Applets and extensions load in parallel at login, so the applets may not exist yet.
+        // Watch the panel zones for applets that are added later.
+        this._connectPanels();
         this._scan();
-        // Applets get recreated when the panel layout changes; scan again then.
-        this._settingsChangedId = global.settings.connect("changed::enabled-applets", () => this._queueScan());
+        // PanelManager creates panels (and loads their applets) when the panel list or the monitors
+        // change. It connected to these signals first, so its handlers run before these ones.
+        this._panelsEnabledId = global.settings.connect("changed::panels-enabled", () => this._onPanelsChanged());
+        this._monitorsChangedId = Main.layoutManager.connect("monitors-changed", () => this._onPanelsChanged());
         // New legacy XEmbed tray icons.
         this._iconAddedId = Main.statusIconDispatcher.connect("status-icon-added", (o, icon) => this._addActor(icon));
     }
 
     disable() {
-        if (this._settingsChangedId) {
-            global.settings.disconnect(this._settingsChangedId);
-            this._settingsChangedId = 0;
+        if (this._panelsEnabledId) {
+            global.settings.disconnect(this._panelsEnabledId);
+            this._panelsEnabledId = 0;
+        }
+        if (this._monitorsChangedId) {
+            Main.layoutManager.disconnect(this._monitorsChangedId);
+            this._monitorsChangedId = 0;
         }
         if (this._iconAddedId) {
             Main.statusIconDispatcher.disconnect(this._iconAddedId);
             this._iconAddedId = 0;
         }
-        if (this._rescanSourceId) {
-            GLib.source_remove(this._rescanSourceId);
-            this._rescanSourceId = 0;
+        for (let [box, ids] of this._panelBoxes) {
+            box.disconnect(ids.addedId);
+            box.disconnect(ids.destroyId);
         }
+        this._panelBoxes.clear();
         this._patchedApplets.forEach(applet => this._unpatchXappApplet(applet));
         this._patchedApplets = [];
 
@@ -206,13 +215,47 @@ class TrayEffects {
         }
     }
 
-    _scan() {
-        this._rescanSourceId = 0;
+    _connectPanels() {
+        for (let panel of Main.panelManager.panels) {
+            if (!panel) {
+                continue;
+            }
+            // An applet actor goes into one of these zones when the applet is created or moved.
+            for (let box of [panel._leftBox, panel._centerBox, panel._rightBox]) {
+                if (!box || this._panelBoxes.has(box)) {
+                    continue;
+                }
+                let addedId = box.connect("actor-added", (container, actor) => this._onPanelActorAdded(actor));
+                let destroyId = box.connect("destroy", () => this._panelBoxes.delete(box));
+                this._panelBoxes.set(box, { addedId, destroyId });
+            }
+        }
+    }
 
-        let xappApplets = AppletManager.getRunningInstancesForUuid(XAPP_UUID);
+    _onPanelsChanged() {
+        // The applets of a new panel load before this runs, so scan for them too.
+        this._connectPanels();
+        this._scan();
+    }
+
+    _onPanelActorAdded(actor) {
+        // AppletManager sets _applet and _uuid before it adds the applet actor to the panel.
+        let applet = actor._applet;
+        if (applet && applet._uuid === XAPP_UUID) {
+            this._dropStaleApplets();
+            this._patchXappApplet(applet);
+        }
+    }
+
+    _dropStaleApplets() {
         // Drop instances that no longer run (e.g. after an applet reload).
+        let xappApplets = AppletManager.getRunningInstancesForUuid(XAPP_UUID);
         this._patchedApplets = this._patchedApplets.filter(applet => xappApplets.includes(applet));
-        xappApplets.forEach(applet => this._patchXappApplet(applet));
+    }
+
+    _scan() {
+        this._dropStaleApplets();
+        AppletManager.getRunningInstancesForUuid(XAPP_UUID).forEach(applet => this._patchXappApplet(applet));
 
         // Each legacy tray icon sits in an St.Bin inside the systray applet's button_box.
         let systrayApplets = AppletManager.getRunningInstancesForUuid(SYSTRAY_UUID);
@@ -222,20 +265,6 @@ class TrayEffects {
                     this._addActor(button.child);
                 }
             }
-        }
-
-        // Applets and extensions load in parallel at login, so the applets may not exist yet.
-        if (xappApplets.length === 0 && systrayApplets.length === 0 && this._retriesLeft > 0) {
-            this._retriesLeft--;
-            this._queueScan();
-        }
-
-        return GLib.SOURCE_REMOVE;
-    }
-
-    _queueScan() {
-        if (this._rescanSourceId === 0) {
-            this._rescanSourceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => this._scan());
         }
     }
 }
